@@ -1,7 +1,7 @@
 <p align="center">
   <b>WordBreak</b> — <a href="https://wordbreak-fe.vercel.app/">Live app</a> ·
-  <a href="https://github.com/foxGrant/wordbreak-fe">Frontend</a> ·
-  <a href="https://github.com/foxGrant/wordbreak-contracts">Contracts</a>
+  <a href="https://github.com/wordBr/wordbreak-fe">Frontend</a> ·
+  <a href="https://github.com/wordBr/wordbreak-contracts">Contracts</a>
 </p>
 
 # WordBreak — Backend
@@ -87,7 +87,7 @@ the Railway dashboard (or `railway variables set KEY=value`) — none are requir
 to boot; the game runs with signing/staking disabled until they're set.
 
 **Live config reference** (Celo mainnet): `POOLS_CONTRACT=0x8eF9AA2ccc401A1146eCDa6605A02cc1A72e3F3a`
-(the [proxy address](https://github.com/foxGrant/wordbreak-contracts) — always use the proxy,
+(the [proxy address](https://github.com/wordBr/wordbreak-contracts) — always use the proxy,
 never the implementation), `CHAIN_ID=42220`, `CHAIN_RPC_URL=https://forno.celo.org`.
 
 ## API
