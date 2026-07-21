@@ -27,8 +27,32 @@ const poolABIJSON = `[
    "outputs":[{"name":"","type":"bool"}]},
   {"type":"function","name":"roundExists","stateMutability":"view",
    "inputs":[{"name":"","type":"uint256"}],
-   "outputs":[{"name":"","type":"bool"}]}
+   "outputs":[{"name":"","type":"bool"}]},
+  {"type":"function","name":"getRound","stateMutability":"view",
+   "inputs":[{"name":"","type":"uint256"}],
+   "outputs":[
+     {"name":"entryFee","type":"uint128"},
+     {"name":"endTime","type":"uint64"},
+     {"name":"refundDelay","type":"uint32"},
+     {"name":"rakeBps","type":"uint16"},
+     {"name":"settled","type":"bool"},
+     {"name":"cancelled","type":"bool"},
+     {"name":"pot","type":"uint128"},
+     {"name":"entrants","type":"uint32"}
+   ]}
 ]`
+
+// Round mirrors WordBreakPools' on-chain Round struct -- see contracts/src/WordBreakPools.sol.
+type Round struct {
+	EntryFee    *big.Int
+	EndTime     uint64
+	RefundDelay uint32
+	RakeBps     uint16
+	Settled     bool
+	Cancelled   bool
+	Pot         *big.Int
+	Entrants    uint32
+}
 
 // Client is a read-only binding to a deployed WordBreakPools.
 type Client struct {
@@ -74,6 +98,54 @@ func (c *Client) RoundExists(ctx context.Context, roundID *big.Int) (bool, error
 	}
 	exists, _ := out[0].(bool)
 	return exists, nil
+}
+
+// GetRound reads a round's on-chain state -- used to settle with the contract's actual pot and
+// rake rather than recomputing them locally, which could drift from what's really escrowed.
+func (c *Client) GetRound(ctx context.Context, roundID *big.Int) (*Round, error) {
+	var out []interface{}
+	if err := c.bound.Call(&bind.CallOpts{Context: ctx}, &out, "getRound", roundID); err != nil {
+		return nil, fmt.Errorf("getRound: %w", err)
+	}
+	if len(out) != 8 {
+		return nil, fmt.Errorf("getRound: unexpected output count %d", len(out))
+	}
+	entryFee, ok := out[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected entryFee type")
+	}
+	endTime, ok := out[1].(uint64)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected endTime type")
+	}
+	refundDelay, ok := out[2].(uint32)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected refundDelay type")
+	}
+	rakeBps, ok := out[3].(uint16)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected rakeBps type")
+	}
+	settled, ok := out[4].(bool)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected settled type")
+	}
+	cancelled, ok := out[5].(bool)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected cancelled type")
+	}
+	pot, ok := out[6].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected pot type")
+	}
+	entrants, ok := out[7].(uint32)
+	if !ok {
+		return nil, fmt.Errorf("getRound: unexpected entrants type")
+	}
+	return &Round{
+		EntryFee: entryFee, EndTime: endTime, RefundDelay: refundDelay, RakeBps: rakeBps,
+		Settled: settled, Cancelled: cancelled, Pot: pot, Entrants: entrants,
+	}, nil
 }
 
 // Close releases the RPC connection.
