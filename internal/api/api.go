@@ -11,12 +11,16 @@
 //	POST /api/daily/submit                 -> submit {address, words[]} for today
 //	GET  /api/daily/leaderboard?date=...    -> ranked standings
 //	POST /api/admin/sign-settlement        -> referee signs {roundId, winners[], amounts[]}
+//	POST /api/admin/pool/create            -> open a round on-chain + register it {entryFee, days}
 //
 // Admin routes require the X-Admin-Token header. Signing requires a configured referee key.
 package api
 
 import (
+	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net/http"
 	"time"
@@ -49,6 +53,7 @@ type Server struct {
 	store    *store.Store
 	signer   *signer.Signer // may be nil if no referee key configured
 	chain    *chain.Client  // may be nil if no RPC configured
+	writer   *chain.Writer  // may be nil if no operator key configured
 	rooms    *room.Manager
 	cfg      Config
 }
@@ -68,8 +73,11 @@ func New(d *dictionary.Dictionary, gt *grid.Trie, st *store.Store, sg *signer.Si
 }
 
 // EnableRoomStaking wires the on-chain writer into the multiplayer room manager, turning on
-// staked rooms. Without calling this, Create rejects any non-zero stake.
+// staked rooms, and also makes it available to the admin pool-creation endpoint (same operator
+// key opens both staked rooms and daily/multi-day pools). Without calling this, Create rejects
+// any non-zero stake and /api/admin/pool/create is disabled.
 func (s *Server) EnableRoomStaking(w *chain.Writer, chainCli *chain.Client, sg *signer.Signer) {
+	s.writer = w
 	s.rooms.EnableStaking(w, chainCli, sg)
 }
 
@@ -85,6 +93,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/daily/submit", s.handleDailySubmit)
 	mux.HandleFunc("GET /api/daily/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("POST /api/admin/daily/open", s.handleOpenDaily)
+	mux.HandleFunc("POST /api/admin/pool/create", s.handleCreatePool)
 	mux.HandleFunc("POST /api/admin/sign-settlement", s.handleSignSettlement)
 	// multiplayer rooms
 	mux.HandleFunc("POST /api/room/create", s.handleRoomCreate)
@@ -284,6 +293,94 @@ func (s *Server) handleOpenDaily(w http.ResponseWriter, r *http.Request) {
 		"endTime": d.EndTime.Unix(),
 		"paid":    true,
 	})
+}
+
+// handleCreatePool does what used to take a forge script (CreateRound.s.sol) plus a loop of
+// /api/admin/daily/open calls, in one request: opens a round on-chain with the operator wallet,
+// then registers it with the backend for every day in [today, today+days). A pool is always
+// visible starting today; Days controls how long it stays open (1 = classic single-day daily).
+func (s *Server) handleCreatePool(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOK(w, r) {
+		return
+	}
+	var req struct {
+		EntryFee string `json:"entryFee"` // wei, decimal string
+		Days     int    `json:"days"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	entryFee, ok := new(big.Int).SetString(req.EntryFee, 10)
+	if !ok || entryFee.Sign() <= 0 {
+		writeErr(w, http.StatusBadRequest, "entryFee must be a positive wei amount (the contract rejects a zero entry fee)")
+		return
+	}
+	if req.Days < 1 || req.Days > 90 {
+		writeErr(w, http.StatusBadRequest, "days must be between 1 and 90")
+		return
+	}
+	// Cheap request-shape validation runs before this, so a malformed request always gets a
+	// clear 400 regardless of server config -- only a well-formed request reaches this check.
+	if s.writer == nil || s.chain == nil {
+		writeErr(w, http.StatusServiceUnavailable, "on-chain pool creation isn't configured")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	roundID, err := freshRoundID(ctx, s.chain)
+	cancel()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not prepare a round id: "+err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	endTime := now.AddDate(0, 0, req.Days)
+
+	ctx, cancel = context.WithTimeout(r.Context(), 30*time.Second)
+	err = s.writer.CreateRound(ctx, roundID, entryFee, uint64(endTime.Unix()))
+	cancel()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not open the round on-chain: "+err.Error())
+		return
+	}
+
+	dateKeys := make([]string, req.Days)
+	for i := 0; i < req.Days; i++ {
+		dateKey := now.AddDate(0, 0, i).Format("2006-01-02")
+		letters := rack.GenerateDaily(s.dict, dateKey, s.cfg.DailyRackSize).Letters
+		s.store.OpenPaidDaily(dateKey, roundID.String(), endTime, letters)
+		dateKeys[i] = dateKey
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"roundId":  roundID.String(),
+		"entryFee": entryFee.String(),
+		"endTime":  endTime.Unix(),
+		"dateKeys": dateKeys,
+	})
+}
+
+// freshRoundID picks a large random on-chain round id, retrying on the (extremely unlikely)
+// chance it collides with an existing round. Mirrors internal/room's identically-named helper,
+// which can't be reused directly since it takes a *chain.Client from a different package.
+func freshRoundID(ctx context.Context, reader *chain.Client) (*big.Int, error) {
+	for i := 0; i < 5; i++ {
+		buf := make([]byte, 8)
+		if _, err := cryptorand.Read(buf); err != nil {
+			return nil, err
+		}
+		n := new(big.Int).SetBytes(buf)
+		n.Rsh(n, 1)
+		exists, err := reader.RoundExists(ctx, n)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return n, nil
+		}
+	}
+	return nil, fmt.Errorf("could not find a free round id")
 }
 
 func (s *Server) handleSignSettlement(w http.ResponseWriter, r *http.Request) {
