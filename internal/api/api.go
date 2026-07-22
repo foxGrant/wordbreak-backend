@@ -94,6 +94,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/daily/leaderboard", s.handleLeaderboard)
 	mux.HandleFunc("POST /api/admin/daily/open", s.handleOpenDaily)
 	mux.HandleFunc("POST /api/admin/pool/create", s.handleCreatePool)
+	mux.HandleFunc("GET /api/admin/pool/list", s.handleListPools)
 	mux.HandleFunc("POST /api/admin/sign-settlement", s.handleSignSettlement)
 	// multiplayer rooms
 	mux.HandleFunc("POST /api/room/create", s.handleRoomCreate)
@@ -381,6 +382,22 @@ func freshRoundID(ctx context.Context, reader *chain.Client) (*big.Int, error) {
 		}
 	}
 	return nil, fmt.Errorf("could not find a free round id")
+}
+
+// handleListPools returns every registered paid round, so the admin UI can show what's already
+// open before creating another one.
+func (s *Server) handleListPools(w http.ResponseWriter, r *http.Request) {
+	if !s.adminOK(w, r) {
+		return
+	}
+	pools := s.store.ListPaidDailies()
+	out := make([]map[string]any, len(pools))
+	for i, p := range pools {
+		out[i] = map[string]any{
+			"dateKey": p.DateKey, "letters": p.Letters, "roundId": p.RoundID, "endTime": p.EndTime.Unix(),
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pools": out})
 }
 
 func (s *Server) handleSignSettlement(w http.ResponseWriter, r *http.Request) {

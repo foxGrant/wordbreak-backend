@@ -29,6 +29,30 @@ func doCreatePool(t *testing.T, s *Server, token, body string) *httptest.Respons
 	return rec
 }
 
+func TestListPools_RequiresAdminToken(t *testing.T) {
+	s := testServer(t, "secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/pool/list", nil)
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 with no token, got %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestListPools_EmptyByDefault(t *testing.T) {
+	s := testServer(t, "secret")
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/pool/list", nil)
+	req.Header.Set("X-Admin-Token", "secret")
+	rec := httptest.NewRecorder()
+	s.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"pools":[]`) && !strings.Contains(rec.Body.String(), `"pools":null`) {
+		t.Fatalf("expected an empty pools list for a fresh store, got %s", rec.Body)
+	}
+}
+
 func TestCreatePool_DisabledWithoutServerAdminToken(t *testing.T) {
 	s := testServer(t, "") // AdminToken never configured on the server at all
 	rec := doCreatePool(t, s, "anything", `{"entryFee":"10000000000000000","days":1}`)

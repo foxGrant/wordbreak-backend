@@ -25,9 +25,18 @@ type Submission struct {
 type Persister interface {
 	UpsertDailyRound(dateKey, letters string, paid bool, roundID string, endTime time.Time)
 	LoadDailyRound(dateKey string) (letters string, paid bool, roundID string, endTime time.Time, found bool)
+	ListPaidDailyRounds() []PaidRoundInfo
 	UpsertSubmission(dateKey string, sub Submission)
 	LoadSubmissions(dateKey string) []Submission
 	UpsertPlayerName(address, name string)
+}
+
+// PaidRoundInfo is one row of the admin "what pools exist" listing.
+type PaidRoundInfo struct {
+	DateKey string    `json:"dateKey"`
+	Letters string    `json:"letters"`
+	RoundID string    `json:"roundId"`
+	EndTime time.Time `json:"endTime"`
 }
 
 // Daily is one day's shared round.
@@ -115,6 +124,27 @@ func (s *Store) OpenPaidDaily(dateKey, roundID string, endTime time.Time, letter
 		s.persist.UpsertDailyRound(dateKey, d.Letters, true, roundID, endTime)
 	}
 	return d
+}
+
+// ListPaidDailies returns every registered paid round, most recent dateKey first. Prefers the
+// Persister when one's attached, since that's the full history across restarts -- this
+// process's in-memory map only has entries for dateKeys something has actually touched (a
+// player visiting, or a prior OpenPaidDaily call) since it last started.
+func (s *Store) ListPaidDailies() []PaidRoundInfo {
+	if s.persist != nil {
+		return s.persist.ListPaidDailyRounds()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]PaidRoundInfo, 0, len(s.dailies))
+	for _, d := range s.dailies {
+		if !d.Paid {
+			continue
+		}
+		out = append(out, PaidRoundInfo{DateKey: d.DateKey, Letters: d.Letters, RoundID: d.RoundID, EndTime: d.EndTime})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DateKey > out[j].DateKey })
+	return out
 }
 
 // Submit records a player's result, keeping only their best score for the round.

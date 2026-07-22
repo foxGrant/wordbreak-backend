@@ -104,6 +104,34 @@ func (db *DB) LoadDailyRound(dateKey string) (letters string, paid bool, roundID
 	return letters, paid, roundID, endTime, true
 }
 
+func (db *DB) ListPaidDailyRounds() []store.PaidRoundInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	rows, err := db.pool.Query(ctx,
+		`SELECT date_key, letters, round_id, end_time FROM daily_rounds WHERE paid = true ORDER BY date_key DESC`,
+	)
+	if err != nil {
+		log.Printf("[db] ListPaidDailyRounds: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var out []store.PaidRoundInfo
+	for rows.Next() {
+		var r store.PaidRoundInfo
+		var et *time.Time
+		if err := rows.Scan(&r.DateKey, &r.Letters, &r.RoundID, &et); err != nil {
+			log.Printf("[db] ListPaidDailyRounds scan: %v", err)
+			continue
+		}
+		if et != nil {
+			r.EndTime = *et
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 func (db *DB) UpsertSubmission(dateKey string, sub store.Submission) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
